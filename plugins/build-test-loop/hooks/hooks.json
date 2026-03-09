@@ -1,0 +1,21 @@
+{
+  "description": "Build-Test-Loop and Project-Loop plugin hooks",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/stop.py",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/stop_project.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

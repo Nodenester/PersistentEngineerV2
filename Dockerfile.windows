@@ -1,0 +1,147 @@
+# =============================================================================
+# Persistent Engineer Agent - Windows Container
+# =============================================================================
+# A continuously running AI agent with full OS access, multiple workspaces,
+# credential management, and computer use capability.
+# NOTE: Windows containers require Windows host with Docker Windows containers
+# =============================================================================
+
+# escape=`
+
+FROM mcr.microsoft.com/windows/servercore:ltsc2022
+
+# Set PowerShell as default shell
+SHELL ["powershell", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
+
+# =============================================================================
+# STAGE 1: Install Chocolatey package manager
+# =============================================================================
+
+RUN Set-ExecutionPolicy Bypass -Scope Process -Force; `
+    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; `
+    iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+
+# =============================================================================
+# STAGE 2: Install development tools
+# =============================================================================
+
+RUN choco install -y `
+    git `
+    nodejs-lts `
+    python3 `
+    dotnet-sdk `
+    rust
+
+# Refresh environment
+RUN refreshenv
+
+# =============================================================================
+# STAGE 3: Install global npm packages
+# =============================================================================
+
+RUN npm install -g `
+    @anthropic-ai/claude-code `
+    @modelcontextprotocol/server-filesystem `
+    @playwright/mcp@latest
+
+# =============================================================================
+# STAGE 4: Install Python packages for daemon and desktop control
+# =============================================================================
+
+RUN pip install `
+    redis `
+    cryptography `
+    pydantic `
+    mcp `
+    pyautogui `
+    pywin32 `
+    pillow
+
+# =============================================================================
+# STAGE 5: Create directories
+# =============================================================================
+
+RUN New-Item -ItemType Directory -Force -Path C:\workspace\projects; `
+    New-Item -ItemType Directory -Force -Path C:\workspace\.state; `
+    New-Item -ItemType Directory -Force -Path C:\workspace\.creds; `
+    New-Item -ItemType Directory -Force -Path C:\workspace\.agent-memory; `
+    New-Item -ItemType Directory -Force -Path C:\opt\mcp-tools; `
+    New-Item -ItemType Directory -Force -Path C:\opt\daemon; `
+    New-Item -ItemType Directory -Force -Path C:\opt\credentials
+
+# =============================================================================
+# STAGE 6: Copy MCP tools
+# =============================================================================
+
+COPY mcp-tools/ C:/opt/mcp-tools/
+
+# Build .NET MCP tools
+WORKDIR C:/opt/mcp-tools
+
+RUN if (Test-Path "CodeStructureAnalyzer/CodeStructureAnalyzer.csproj") { `
+        Set-Location CodeStructureAnalyzer; `
+        dotnet restore; `
+        dotnet build -c Release `
+    }
+
+RUN if (Test-Path "AgentMemory/AgentMemory.csproj") { `
+        Set-Location AgentMemory; `
+        dotnet restore; `
+        dotnet build -c Release `
+    }
+
+RUN if (Test-Path "GitPublisher/GitPublisher.csproj") { `
+        Set-Location GitPublisher; `
+        dotnet restore; `
+        dotnet build -c Release `
+    }
+
+# =============================================================================
+# STAGE 7: Copy daemon files
+# =============================================================================
+
+COPY daemon/ C:/opt/daemon/
+COPY credentials/ C:/opt/credentials/
+
+# =============================================================================
+# STAGE 8: Copy plugins
+# =============================================================================
+
+COPY plugins/ C:/opt/plugins/
+
+# =============================================================================
+# STAGE 9: Copy entrypoint
+# =============================================================================
+
+COPY daemon-entrypoint.ps1 C:/entrypoint.ps1
+
+# =============================================================================
+# STAGE 10: Environment variables
+# =============================================================================
+
+ENV AGENT_ID=default
+ENV REDIS_URL=redis://redis:6379
+ENV WORKSPACE_ROOT=C:\workspace
+ENV PROJECTS_DIR=C:\workspace\projects
+ENV STATE_DIR=C:\workspace\.state
+ENV CREDS_DIR=C:\workspace\.creds
+ENV MEMORY_DIR=C:\workspace\.agent-memory
+
+# =============================================================================
+# STAGE 11: Expose ports
+# =============================================================================
+
+# Health check port
+EXPOSE 8080
+
+# =============================================================================
+# STAGE 12: Set working directory
+# =============================================================================
+
+WORKDIR C:\workspace
+
+# =============================================================================
+# STAGE 13: Entrypoint
+# =============================================================================
+
+ENTRYPOINT ["powershell", "-File", "C:\\entrypoint.ps1"]

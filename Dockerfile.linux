@@ -1,0 +1,314 @@
+# =============================================================================
+# Persistent Engineer Agent - Linux Container
+# =============================================================================
+# A continuously running AI agent with full OS access, multiple workspaces,
+# credential management, and computer use capability.
+# =============================================================================
+
+FROM ubuntu:24.04
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# =============================================================================
+# STAGE 1: System packages and development tools
+# =============================================================================
+
+RUN apt-get update && apt-get install -y \
+    # Build essentials
+    build-essential \
+    curl \
+    wget \
+    git \
+    unzip \
+    zip \
+    ca-certificates \
+    gnupg \
+    software-properties-common \
+    # Desktop control tools (xdotool, scrot, etc.)
+    xdotool \
+    scrot \
+    xclip \
+    wmctrl \
+    x11-utils \
+    xvfb \
+    # VNC for remote desktop
+    x11vnc \
+    novnc \
+    websockify \
+    # Window manager (lightweight)
+    openbox \
+    # Terminal and utilities
+    xterm \
+    nano \
+    vim \
+    htop \
+    procps \
+    # Networking
+    net-tools \
+    iputils-ping \
+    dnsutils \
+    # Python
+    python3 \
+    python3-pip \
+    python3-venv \
+    # Supervisor for process management
+    supervisor \
+    # Redis client
+    redis-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# STAGE 2: SQL Server tools (sqlcmd, bcp for .bak restoration)
+# =============================================================================
+
+RUN curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/ubuntu/24.04/prod noble main" > /etc/apt/sources.list.d/mssql-release.list \
+    && apt-get update \
+    && ACCEPT_EULA=Y apt-get install -y mssql-tools18 unixodbc-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Add sqlcmd to PATH
+ENV PATH="$PATH:/opt/mssql-tools18/bin"
+
+# =============================================================================
+# STAGE 3: Node.js 22.x
+# =============================================================================
+
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y nodejs \
+    && npm install -g npm@latest \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install global npm packages
+RUN npm install -g \
+    @anthropic-ai/claude-code \
+    @modelcontextprotocol/server-filesystem \
+    @playwright/mcp@latest
+
+# =============================================================================
+# STAGE 3: .NET SDKs (8.0, 9.0, and 10.0)
+# =============================================================================
+
+# Install .NET 8 from Microsoft repo (stable)
+RUN wget https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb -O packages-microsoft-prod.deb \
+    && dpkg -i packages-microsoft-prod.deb \
+    && rm packages-microsoft-prod.deb \
+    && apt-get update \
+    && apt-get install -y dotnet-sdk-8.0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install .NET 9 and 10 using dotnet-install.sh (for newer versions not in repo)
+RUN curl -sSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh \
+    && chmod +x /tmp/dotnet-install.sh \
+    && /tmp/dotnet-install.sh --channel 9.0 --install-dir /usr/share/dotnet \
+    && /tmp/dotnet-install.sh --channel 10.0 --install-dir /usr/share/dotnet \
+    && rm /tmp/dotnet-install.sh
+
+# =============================================================================
+# STAGE 4: Rust toolchain
+# =============================================================================
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# =============================================================================
+# STAGE 5: Chrome/Chromium for browser automation
+# =============================================================================
+
+RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
+    && apt-get update \
+    && apt-get install -y google-chrome-stable \
+    && rm -rf /var/lib/apt/lists/*
+
+# Docker CE for DinD (Sysbox containers)
+RUN curl -fsSL https://get.docker.com | sh
+
+# Install Playwright browsers
+RUN npx playwright install chromium --with-deps
+
+# Pre-configure Chrome to skip first-run dialogs and disable telemetry
+# Chrome policies (system-wide)
+RUN mkdir -p /etc/opt/chrome/policies/managed /etc/opt/chrome/policies/recommended \
+    && echo '{ \
+        "MetricsReportingEnabled": false, \
+        "SafeBrowsingExtendedReportingEnabled": false, \
+        "SpellCheckServiceEnabled": false, \
+        "CloudPrintSubmitEnabled": false, \
+        "TranslateEnabled": false, \
+        "PasswordManagerEnabled": false, \
+        "AutofillAddressEnabled": false, \
+        "AutofillCreditCardEnabled": false, \
+        "DefaultBrowserSettingEnabled": false, \
+        "PromotionalTabsEnabled": false, \
+        "SyncDisabled": true, \
+        "BrowserSignin": 0, \
+        "BackgroundModeEnabled": false \
+    }' > /etc/opt/chrome/policies/managed/no_telemetry.json
+
+# =============================================================================
+# STAGE 6: Create agent user
+# =============================================================================
+
+RUN groupadd -g 1000 agent || true \
+    && useradd -m -u 1000 -g 1000 -s /bin/bash agent || useradd -m -s /bin/bash agent || true \
+    && mkdir -p /workspace/projects /workspace/.state /workspace/.creds /workspace/.agent-memory \
+    && chown -R agent:agent /workspace || chown -R 1000:1000 /workspace
+
+# Pre-create Claude Code directories for agent teams
+RUN mkdir -p /home/agent/.claude/teams /home/agent/.claude/tasks && \
+    chown -R agent:agent /home/agent/.claude
+
+# Install Playwright browser dependencies (as root)
+RUN npx playwright install-deps chromium
+
+# Install Playwright browsers as agent user (so permissions are correct)
+USER agent
+ENV PLAYWRIGHT_BROWSERS_PATH=/home/agent/.cache/ms-playwright
+RUN mkdir -p /home/agent/.cache/ms-playwright \
+    && npx playwright install chromium
+
+# Note: Playwright MCP will download its required browser version at runtime when first invoked
+# The agent user has the necessary permissions for this since PLAYWRIGHT_BROWSERS_PATH is set
+USER root
+
+# =============================================================================
+# STAGE 7: Python dependencies for daemon and MCP tools
+# =============================================================================
+
+COPY daemon/requirements.txt /tmp/daemon-requirements.txt
+COPY credentials/vault.py /opt/credentials/vault.py
+COPY mcp-tools/desktop-control/requirements.txt /tmp/desktop-control-requirements.txt
+
+RUN pip3 install --break-system-packages --ignore-installed \
+    -r /tmp/daemon-requirements.txt \
+    -r /tmp/desktop-control-requirements.txt \
+    && rm /tmp/daemon-requirements.txt /tmp/desktop-control-requirements.txt
+
+# =============================================================================
+# STAGE 8: Copy and build MCP tools
+# =============================================================================
+
+COPY mcp-tools/ /opt/mcp-tools/
+
+# Build .NET MCP tools
+WORKDIR /opt/mcp-tools
+
+# Build CodeStructureAnalyzer (outputs codeparse.dll)
+RUN if [ -d "CodeStructureAnalyzer" ] && [ -f "CodeStructureAnalyzer/CodeStructureAnalyzer.csproj" ]; then \
+        cd CodeStructureAnalyzer && \
+        dotnet restore && \
+        dotnet build -c Release; \
+    fi
+
+# Build AgentMemory
+RUN if [ -d "AgentMemory" ] && [ -f "AgentMemory/AgentMemory.csproj" ]; then \
+        cd AgentMemory && \
+        dotnet restore && \
+        dotnet build -c Release; \
+    fi
+
+# Build GitPublisher
+RUN if [ -d "GitPublisher" ] && [ -f "GitPublisher/GitPublisher.csproj" ]; then \
+        cd GitPublisher && \
+        dotnet restore && \
+        dotnet build -c Release; \
+    fi
+
+# Make MCP servers executable
+RUN chmod +x /opt/mcp-tools/desktop-control/server.py \
+    && chmod +x /opt/mcp-tools/agent-network/server.py
+
+# =============================================================================
+# STAGE 9: Copy daemon files
+# =============================================================================
+
+COPY daemon/ /opt/daemon/
+COPY credentials/ /opt/credentials/
+RUN chmod +x /opt/daemon/daemon.py
+
+# Copy CLAUDE.md with agent instructions to workspace
+COPY CLAUDE.md /workspace/CLAUDE.md
+
+# =============================================================================
+# STAGE 10: Copy plugins
+# =============================================================================
+
+COPY plugins/ /opt/plugins/
+
+# =============================================================================
+# STAGE 11: Supervisor configuration for process management
+# =============================================================================
+
+COPY supervisor.conf /etc/supervisor/conf.d/persistent-engineer.conf
+
+# Openbox config (single desktop)
+RUN mkdir -p /etc/xdg/openbox
+COPY openbox-rc.xml /etc/xdg/openbox/rc.xml
+
+# Ad-blocking hosts file (StevenBlack unified hosts)
+# Downloaded during build, applied at container startup via entrypoint
+RUN curl -s "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts" -o /opt/adblock-hosts.txt
+
+# =============================================================================
+# STAGE 12: Entrypoint
+# =============================================================================
+
+COPY daemon-entrypoint.sh /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
+
+# =============================================================================
+# STAGE 13: Environment variables
+# =============================================================================
+
+ENV DISPLAY=:0
+ENV AGENT_ID=default
+ENV AGENT_NAME=default
+ENV REDIS_URL=redis://redis:6379
+ENV AGENT_NETWORK_URL=http://host.docker.internal:5050
+ENV HOME=/home/agent
+ENV PATH="/home/agent/.cargo/bin:/home/agent/.local/bin:${PATH}"
+
+# Claude Code plugins path - REQUIRED for /project-loop and /build-test-loop commands
+ENV CLAUDE_PLUGINS_PATH=/opt/plugins
+
+# Workspace directories
+ENV WORKSPACE_ROOT=/workspace
+ENV PROJECTS_DIR=/workspace/projects
+ENV STATE_DIR=/workspace/.state
+ENV CREDS_DIR=/workspace/.creds
+ENV MEMORY_DIR=/workspace/.agent-memory
+
+# VNC settings
+ENV VNC_PASSWORD=agentpwd
+ENV VNC_RESOLUTION=1920x1080x24
+
+# =============================================================================
+# STAGE 14: Expose ports
+# =============================================================================
+
+# VNC port
+EXPOSE 5900
+# noVNC web port
+EXPOSE 6080
+# Health check port
+EXPOSE 8080
+
+# =============================================================================
+# STAGE 15: Volumes
+# =============================================================================
+
+VOLUME ["/workspace"]
+
+# =============================================================================
+# STAGE 16: User and working directory
+# =============================================================================
+
+WORKDIR /workspace
+
+# =============================================================================
+# STAGE 17: Entrypoint
+# =============================================================================
+
+ENTRYPOINT ["/entrypoint.sh"]

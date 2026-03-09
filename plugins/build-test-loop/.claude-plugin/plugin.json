@@ -1,0 +1,8 @@
+{
+  "name": "build-test-loop",
+  "version": "1.6.0",
+  "description": "Autonomous development loops for any project. Simple mode: /build-test-loop for single tasks. Advanced mode: /project-loop for multi-stage projects with configurable stage types (investigate, build, fix, verify). Features: unlimited stages, per-stage loop behavior, smart workflow detection, and REVIEW phase that assesses all findings and can loop back with fix stages until truly done.",
+  "author": {
+    "name": "nestor"
+  }
+}

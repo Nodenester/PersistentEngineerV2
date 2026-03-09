@@ -1,0 +1,189 @@
+version: '3.8'
+
+# =============================================================================
+# Persistent Engineer V2 - Docker Compose (Linux)
+# =============================================================================
+# Starts the complete Persistent Engineer V2 stack:
+# - Redis (message queue)
+# - PostgreSQL (web UI state, agent metadata)
+# - Agent container (persistent AI employee)
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Redis - Message Queue
+  # ---------------------------------------------------------------------------
+  pe-v2-redis:
+    image: redis:7-alpine
+    container_name: pe-v2-redis
+    ports:
+      - "6381:6379"
+    volumes:
+      - pe-v2-redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - pe-v2-network
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL - Web UI State & Agent Metadata
+  # ---------------------------------------------------------------------------
+  pe-v2-postgres:
+    image: postgres:16-alpine
+    container_name: pe-v2-postgres
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-pe_v2}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-pe_v2_secret}
+      - POSTGRES_DB=${POSTGRES_DB:-pe_v2}
+    ports:
+      - "5433:5432"
+    volumes:
+      - pe-v2-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pe_v2}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - pe-v2-network
+
+  # ---------------------------------------------------------------------------
+  # SQL Server - Database for testing
+  # ---------------------------------------------------------------------------
+  pe-v2-sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: pe-v2-sqlserver
+    environment:
+      - ACCEPT_EULA=Y
+      - MSSQL_SA_PASSWORD=${MSSQL_SA_PASSWORD:-YourStrong@Passw0rd}
+      - MSSQL_PID=Developer
+    ports:
+      - "1434:1433"
+    volumes:
+      - pe-v2-sqlserver-data:/var/opt/mssql
+      - pe-v2-sqlserver-backups:/var/opt/mssql/backup
+    healthcheck:
+      test: /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$$MSSQL_SA_PASSWORD" -C -Q "SELECT 1" || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - pe-v2-network
+
+  # ---------------------------------------------------------------------------
+  # Persistent Engineer V2 Agent
+  # ---------------------------------------------------------------------------
+  pe-v2-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.linux
+    container_name: pe-v2-agent
+    hostname: pe-v2-agent
+    # To enable Sysbox runtime for secure DinD, uncomment the line below.
+    # Requires Sysbox to be installed on the host: https://github.com/nestybox/sysbox
+    # runtime: sysbox-runc
+    environment:
+      # Agent identification
+      - AGENT_ID=${AGENT_ID:-agent}
+
+      # Redis connection (uses pe-v2-redis service)
+      - REDIS_URL=redis://pe-v2-redis:6379
+
+      # Anthropic API (optional if mounting ~/.claude with credentials)
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+
+      # GitHub token (optional, for repo operations)
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+
+      # Display settings
+      - DISPLAY=:0
+      - VNC_RESOLUTION=1920x1080x24
+      - VNC_PASSWORD=${VNC_PASSWORD:-agentpwd}
+
+      # Workspace settings
+      - WORKSPACE_ROOT=/workspace
+      - PROJECTS_DIR=/workspace/projects
+      - STATE_DIR=/workspace/.state
+      - CREDS_DIR=/workspace/.creds
+      - MEMORY_DIR=/workspace/.agent-memory
+
+      # Claude Code settings (for long-running loops)
+      - MAX_CODING_ITERATIONS=${MAX_CODING_ITERATIONS:-500}
+      - MAX_BUILD_ATTEMPTS=${MAX_BUILD_ATTEMPTS:-10}
+
+      # Claude Code Agent Teams (experimental)
+      - CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1
+
+      # SQL Server connection
+      - SQLSERVER_HOST=pe-v2-sqlserver
+      - SQLSERVER_PORT=1433
+      - SQLSERVER_USER=sa
+      - SQLSERVER_PASSWORD=${MSSQL_SA_PASSWORD:-YourStrong@Passw0rd}
+      - CONNECTION_STRING=Server=pe-v2-sqlserver,1433;User Id=sa;Password=${MSSQL_SA_PASSWORD:-YourStrong@Passw0rd};TrustServerCertificate=True;
+    ports:
+      # VNC direct access
+      - "5901:5900"
+      # noVNC web access
+      - "6081:6080"
+      # Health check
+      - "8081:8080"
+    volumes:
+      # Persistent workspace volume
+      - pe-v2-workspace-data:/workspace
+
+      # Mount Claude credentials from parent (read-only source for refresh)
+      - ${HOME}/.claude:/claude-credentials:ro
+    depends_on:
+      pe-v2-redis:
+        condition: service_healthy
+      pe-v2-sqlserver:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - pe-v2-network
+    # Allow the agent to have enough resources
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8G
+        reservations:
+          cpus: '2'
+          memory: 4G
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  pe-v2-redis-data:
+    driver: local
+  pe-v2-postgres-data:
+    driver: local
+  pe-v2-workspace-data:
+    driver: local
+  pe-v2-sqlserver-data:
+    driver: local
+  pe-v2-sqlserver-backups:
+    driver: local
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  pe-v2-network:
+    name: pe-v2-network
+    external: true

@@ -1,0 +1,131 @@
+# =============================================================================
+# Persistent Engineer Agent - Minimal Variant
+# =============================================================================
+# Lightweight agent with just Node.js + Claude Code. No VNC, no desktop,
+# no browser. Fastest startup, smallest footprint (~800MB).
+# =============================================================================
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# =============================================================================
+# STAGE 1: Minimal system packages
+# =============================================================================
+
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    git \
+    ca-certificates \
+    gnupg \
+    # Python (for daemon)
+    python3 \
+    python3-pip \
+    # Utilities
+    nano \
+    htop \
+    procps \
+    net-tools \
+    redis-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# STAGE 2: Node.js 22.x
+# =============================================================================
+
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y nodejs \
+    && npm install -g npm@latest \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install global npm packages
+RUN npm install -g \
+    @anthropic-ai/claude-code \
+    @modelcontextprotocol/server-filesystem
+
+# =============================================================================
+# STAGE 3: Create agent user
+# =============================================================================
+
+RUN groupadd -g 1000 agent || true \
+    && useradd -m -u 1000 -g 1000 -s /bin/bash agent || useradd -m -s /bin/bash agent || true \
+    && mkdir -p /workspace/projects /workspace/.state /workspace/.creds /workspace/.agent-memory \
+    && chown -R agent:agent /workspace || chown -R 1000:1000 /workspace
+
+# Pre-create Claude Code directories
+RUN mkdir -p /home/agent/.claude/teams /home/agent/.claude/tasks && \
+    chown -R agent:agent /home/agent/.claude
+
+# =============================================================================
+# STAGE 4: Python dependencies for daemon
+# =============================================================================
+
+COPY daemon/requirements.txt /tmp/daemon-requirements.txt
+COPY credentials/vault.py /opt/credentials/vault.py
+
+RUN pip3 install --break-system-packages --ignore-installed \
+    -r /tmp/daemon-requirements.txt \
+    && rm /tmp/daemon-requirements.txt
+
+# =============================================================================
+# STAGE 5: Copy MCP tools (lightweight - skip .NET tools)
+# =============================================================================
+
+COPY mcp-tools/ /opt/mcp-tools/
+
+RUN chmod +x /opt/mcp-tools/agent-network/server.py || true
+
+# =============================================================================
+# STAGE 6: Copy daemon files
+# =============================================================================
+
+COPY daemon/ /opt/daemon/
+COPY credentials/ /opt/credentials/
+RUN chmod +x /opt/daemon/daemon.py
+
+COPY CLAUDE.md /workspace/CLAUDE.md
+
+# =============================================================================
+# STAGE 7: Copy plugins
+# =============================================================================
+
+COPY plugins/ /opt/plugins/
+
+# =============================================================================
+# STAGE 8: Minimal entrypoint (no VNC/desktop)
+# =============================================================================
+
+COPY minimal-entrypoint.sh /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
+
+# =============================================================================
+# STAGE 9: Environment variables
+# =============================================================================
+
+ENV AGENT_ID=default
+ENV AGENT_NAME=default
+ENV REDIS_URL=redis://redis:6379
+ENV AGENT_NETWORK_URL=http://host.docker.internal:5050
+ENV HOME=/home/agent
+ENV PATH="/home/agent/.local/bin:${PATH}"
+
+ENV CLAUDE_PLUGINS_PATH=/opt/plugins
+ENV WORKSPACE_ROOT=/workspace
+ENV PROJECTS_DIR=/workspace/projects
+ENV STATE_DIR=/workspace/.state
+ENV CREDS_DIR=/workspace/.creds
+ENV MEMORY_DIR=/workspace/.agent-memory
+
+# =============================================================================
+# STAGE 10: Expose ports and volumes
+# =============================================================================
+
+# Health check only (no VNC ports)
+EXPOSE 8080
+
+VOLUME ["/workspace"]
+
+WORKDIR /workspace
+
+ENTRYPOINT ["/entrypoint.sh"]

@@ -1,0 +1,79 @@
+{
+  "mcpServers": {
+    "agent-network": {
+      "command": "python3",
+      "args": [
+        "/opt/mcp-tools/agent-network/server.py"
+      ],
+      "env": {
+        "AGENT_NETWORK_URL": "${AGENT_NETWORK_URL}",
+        "AGENT_NAME": "${AGENT_NAME}"
+      }
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/workspace/projects"
+      ]
+    },
+    "desktop-control": {
+      "command": "python3",
+      "args": [
+        "/opt/mcp-tools/desktop-control/server.py"
+      ],
+      "env": {
+        "DISPLAY": ":0"
+      }
+    },
+    "code-structure-analyzer": {
+      "command": "dotnet",
+      "args": [
+        "/opt/mcp-tools/CodeStructureAnalyzer/bin/Release/net8.0/codeparse.dll"
+      ],
+      "env": {
+        "PROJECT_ROOT": "/workspace/projects"
+      }
+    },
+    "agent-memory": {
+      "command": "dotnet",
+      "args": [
+        "/opt/mcp-tools/AgentMemory/bin/Release/net8.0/AgentMemory.dll"
+      ],
+      "env": {
+        "MEMORY_DIR": "/workspace/.agent-memory"
+      }
+    },
+    "git-publisher": {
+      "command": "dotnet",
+      "args": [
+        "/opt/mcp-tools/GitPublisher/bin/Release/net8.0/GitPublisher.dll"
+      ],
+      "env": {
+        "REPO_DIR": "/workspace/projects"
+      }
+    },
+    "context7": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@upstash/context7-mcp"
+      ]
+    },
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest",
+        "--no-sandbox",
+        "--user-data-dir", "/tmp/playwright-profile"
+      ],
+      "env": {
+        "DISPLAY": ":0",
+        "HOME": "/home/agent",
+        "PLAYWRIGHT_BROWSERS_PATH": "/home/agent/.cache/ms-playwright"
+      }
+    }
+  }
+}

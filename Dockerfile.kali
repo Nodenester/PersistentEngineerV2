@@ -1,0 +1,220 @@
+# =============================================================================
+# Persistent Engineer Agent - Kali Linux Variant
+# =============================================================================
+# Security-focused agent with pentesting tools, VNC desktop, and Claude Code.
+# =============================================================================
+
+FROM kalilinux/kali-rolling
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# =============================================================================
+# STAGE 1: System packages and security tools
+# =============================================================================
+
+RUN apt-get update && apt-get install -y \
+    # Build essentials
+    build-essential \
+    curl \
+    wget \
+    git \
+    unzip \
+    zip \
+    ca-certificates \
+    gnupg \
+    software-properties-common \
+    # Desktop control tools
+    xdotool \
+    scrot \
+    xclip \
+    wmctrl \
+    x11-utils \
+    xvfb \
+    # VNC for remote desktop
+    x11vnc \
+    novnc \
+    websockify \
+    # Window manager
+    openbox \
+    # Terminal and utilities
+    xterm \
+    nano \
+    vim \
+    htop \
+    procps \
+    # Networking
+    net-tools \
+    iputils-ping \
+    dnsutils \
+    # Python
+    python3 \
+    python3-pip \
+    python3-venv \
+    # Supervisor for process management
+    supervisor \
+    # Redis client
+    redis-tools \
+    # ─── Kali Security Tools ───
+    nmap \
+    nikto \
+    dirb \
+    gobuster \
+    sqlmap \
+    hydra \
+    john \
+    hashcat \
+    netcat-openbsd \
+    socat \
+    tcpdump \
+    wireshark-common \
+    tshark \
+    burpsuite \
+    exploitdb \
+    wordlists \
+    seclists \
+    wfuzz \
+    ffuf \
+    whatweb \
+    dnsenum \
+    whois \
+    fierce \
+    amass \
+    subfinder \
+    # Metasploit
+    metasploit-framework \
+    && rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# STAGE 2: Node.js 22.x
+# =============================================================================
+
+# Kali's nodejs package doesn't include npm, and nodesource can't override it.
+# Install Node.js from official binaries directly into /usr/local instead.
+RUN NODE_VERSION=22.22.0 \
+    && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
+       | tar -xJ -C /usr/local --strip-components=1 \
+    && npm install -g npm@latest
+
+# Install global npm packages
+RUN npm install -g \
+    @anthropic-ai/claude-code \
+    @modelcontextprotocol/server-filesystem \
+    @playwright/mcp@latest
+
+# =============================================================================
+# STAGE 3: Chrome/Chromium for browser automation
+# =============================================================================
+
+RUN apt-get update && apt-get install -y chromium \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Playwright browsers
+RUN npx playwright install chromium --with-deps || true
+
+# =============================================================================
+# STAGE 4: Create agent user
+# =============================================================================
+
+RUN groupadd -g 1000 agent || true \
+    && useradd -m -u 1000 -g 1000 -s /bin/bash agent || useradd -m -s /bin/bash agent || true \
+    && mkdir -p /workspace/projects /workspace/.state /workspace/.creds /workspace/.agent-memory \
+    && chown -R agent:agent /workspace || chown -R 1000:1000 /workspace
+
+# Pre-create Claude Code directories for agent teams
+RUN mkdir -p /home/agent/.claude/teams /home/agent/.claude/tasks && \
+    chown -R agent:agent /home/agent/.claude
+
+# =============================================================================
+# STAGE 5: Python dependencies for daemon and MCP tools
+# =============================================================================
+
+COPY daemon/requirements.txt /tmp/daemon-requirements.txt
+COPY credentials/vault.py /opt/credentials/vault.py
+COPY mcp-tools/desktop-control/requirements.txt /tmp/desktop-control-requirements.txt
+
+RUN pip3 install --break-system-packages --ignore-installed \
+    -r /tmp/daemon-requirements.txt \
+    -r /tmp/desktop-control-requirements.txt \
+    && rm /tmp/daemon-requirements.txt /tmp/desktop-control-requirements.txt
+
+# =============================================================================
+# STAGE 6: Copy and build MCP tools
+# =============================================================================
+
+COPY mcp-tools/ /opt/mcp-tools/
+
+# Make MCP servers executable
+RUN chmod +x /opt/mcp-tools/desktop-control/server.py \
+    && chmod +x /opt/mcp-tools/agent-network/server.py
+
+# =============================================================================
+# STAGE 7: Copy daemon files
+# =============================================================================
+
+COPY daemon/ /opt/daemon/
+COPY credentials/ /opt/credentials/
+RUN chmod +x /opt/daemon/daemon.py
+
+# Copy CLAUDE.md with agent instructions to workspace
+COPY CLAUDE.md /workspace/CLAUDE.md
+
+# =============================================================================
+# STAGE 8: Copy plugins
+# =============================================================================
+
+COPY plugins/ /opt/plugins/
+
+# =============================================================================
+# STAGE 9: Supervisor and desktop configuration
+# =============================================================================
+
+COPY supervisor.conf /etc/supervisor/conf.d/persistent-engineer.conf
+
+# Openbox config
+RUN mkdir -p /etc/xdg/openbox
+COPY openbox-rc.xml /etc/xdg/openbox/rc.xml
+
+# =============================================================================
+# STAGE 10: Entrypoint
+# =============================================================================
+
+COPY daemon-entrypoint.sh /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
+
+# =============================================================================
+# STAGE 11: Environment variables
+# =============================================================================
+
+ENV DISPLAY=:0
+ENV AGENT_ID=default
+ENV AGENT_NAME=default
+ENV REDIS_URL=redis://redis:6379
+ENV AGENT_NETWORK_URL=http://host.docker.internal:5050
+ENV HOME=/home/agent
+ENV PATH="/home/agent/.local/bin:${PATH}"
+
+ENV CLAUDE_PLUGINS_PATH=/opt/plugins
+
+ENV WORKSPACE_ROOT=/workspace
+ENV PROJECTS_DIR=/workspace/projects
+ENV STATE_DIR=/workspace/.state
+ENV CREDS_DIR=/workspace/.creds
+ENV MEMORY_DIR=/workspace/.agent-memory
+
+ENV VNC_PASSWORD=agentpwd
+ENV VNC_RESOLUTION=1920x1080x24
+
+# =============================================================================
+# STAGE 12: Expose ports and volumes
+# =============================================================================
+
+EXPOSE 5900
+EXPOSE 6080
+EXPOSE 8080
+
+VOLUME ["/workspace"]
+
+WORKDIR /workspace
+
+ENTRYPOINT ["/entrypoint.sh"]

@@ -1,0 +1,97 @@
+version: '3.8'
+
+# =============================================================================
+# Persistent Engineer Agent - Docker Compose (Windows)
+# =============================================================================
+# Starts the complete Persistent Engineer stack on Windows:
+# - Redis (message queue)
+# - Agent container (persistent AI employee)
+#
+# NOTE: This requires Docker Desktop with Windows containers enabled
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Redis - Message Queue (Windows container)
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-windowsservercore-ltsc2022
+    container_name: persistent-engineer-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:C:\data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - agent-network
+    # Windows specific isolation mode
+    isolation: process
+
+  # ---------------------------------------------------------------------------
+  # Persistent Engineer Agent (Windows)
+  # ---------------------------------------------------------------------------
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.windows
+    container_name: persistent-engineer-agent
+    environment:
+      # Agent identification
+      - AGENT_ID=${AGENT_ID:-default}
+
+      # Redis connection
+      - REDIS_URL=redis://redis:6379
+
+      # Anthropic API (required)
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+
+      # GitHub token (optional, for repo operations)
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+
+      # Workspace settings
+      - WORKSPACE_ROOT=C:\workspace
+      - PROJECTS_DIR=C:\workspace\projects
+      - STATE_DIR=C:\workspace\.state
+      - CREDS_DIR=C:\workspace\.creds
+      - MEMORY_DIR=C:\workspace\.agent-memory
+    ports:
+      # Health check
+      - "8080:8080"
+    volumes:
+      # Persistent workspace volume
+      - workspace-data:C:\workspace
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "powershell", "-Command", "Invoke-WebRequest -Uri http://localhost:8080/health -UseBasicParsing"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - agent-network
+    isolation: process
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  redis-data:
+    driver: local
+  workspace-data:
+    driver: local
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  agent-network:
+    driver: nat
